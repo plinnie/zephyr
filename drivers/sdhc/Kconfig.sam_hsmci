@@ -1,0 +1,8 @@
+# Copyright 2022 Nikhef
+# SPDX -License-Identifier: Apache-2.0
+
+config SAM_HSMCI
+	bool "ATMEL SAM HSMCI driver"
+	select SDHC_SUPPORTS_NATIVE_MODE
+	help
+	  Enable the ATMEL SAM HSMCI MMC/SD card driver.

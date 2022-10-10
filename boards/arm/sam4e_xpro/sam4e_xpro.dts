@@ -187,6 +187,12 @@
 	pinctrl-names = "default";
 };
 
+&hsmci {
+	pinctrl-0 = <&hsmci_default>;
+	pinctrl-names = "default";	
+	status = "okay";
+};
+
 &wdt {
 	status = "okay";
 };

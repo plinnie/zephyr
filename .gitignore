@@ -77,3 +77,6 @@ MaintainersFormat.txt
 Nits.txt
 Pylint.txt
 YAMLLint.txt
+Identity.txt
+DevicetreeBindings.txt
+.vscode

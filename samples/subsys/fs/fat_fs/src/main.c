@@ -34,7 +34,7 @@ void main(void)
 {
 	/* raw disk i/o */
 	do {
-		static const char *disk_pdrv = "SD";
+		static const char *disk_pdrv = "SDMMC";
 		uint64_t memory_size_mb;
 		uint32_t block_count;
 		uint32_t block_size;

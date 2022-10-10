@@ -74,4 +74,16 @@
 				 <PA25A_USART1_CTS>;
 		};
 	};
+
+	hsmci_default: hsmci_default {
+		group1 {
+			pinmux = <PA28C_HSMCI_MCCDA>,
+				<PA29C_HSMCI_MCCK>,
+				<PA30C_HSMCI_MCDA0>,
+				<PA31C_HSMCI_MCDA1>,
+				<PA26C_HSMCI_MCDA2>,
+				<PA27C_HSMCI_MCDA3>;
+		};
+	};
+
 };
