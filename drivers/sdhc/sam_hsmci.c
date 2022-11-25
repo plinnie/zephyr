@@ -4,6 +4,19 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+
+/*
+	Note: This driver for now only works with PDC mode! 
+
+	Families which should work:
+		SAM4E, SAM4S
+
+	Families which require DMA and do not work (yet):
+		SAMS, SAMV, SAME
+		
+ */
+
+
 #define DT_DRV_COMPAT atmel_sam_hsmci
 
 #include <zephyr/drivers/sdhc.h>
@@ -16,7 +29,7 @@
 
 LOG_MODULE_REGISTER(hsmci, LOG_LEVEL_DBG);
 
-
+#define _HSMCI_DEFAULT_TIMEOUT 5000
 #define _HSMCI_MAX_FREQ (SOC_ATMEL_SAM_MCK_FREQ_HZ >> 1)
 #define _HSMCI_MIN_FREQ (_HSMCI_MAX_FREQ / 0x200)		// only valid when MCI has ODD bit
 
@@ -43,18 +56,21 @@ static const uint8_t _resp2size[] = {
 static const uint8_t _mul_shift[] = { 0, 4, 7, 8, 10, 12, 16, 20 };
 static const uint8_t _mul_shift_size = 8;
 
-struct sam_hsmci_config {
+struct sam_hsmci_config 
+{
 	Hsmci *base;
 	uint8_t periph_id;
 	const struct pinctrl_dev_config *pincfg;
 	struct gpio_dt_spec carrier_detect;
 };
 
-struct sam_hsmci_data {
+struct sam_hsmci_data 
+{
 	bool open_drain;
 	uint8_t cmd_in_progress;
-	void * dptr;
+	struct k_mutex mtx;
 };
+
 
 static int sam_hsmci_reset(const struct device *dev)
 {
@@ -64,6 +80,7 @@ static int sam_hsmci_reset(const struct device *dev)
 	config->base->HSMCI_CR = HSMCI_CR_SWRST;
 	return 0;
 }
+
 
 static int sam_hsmci_get_host_props(const struct device *dev,
 	struct sdhc_host_props *props)
@@ -80,6 +97,7 @@ static int sam_hsmci_get_host_props(const struct device *dev,
 
 	return 0;	
 }
+
 
 static int sam_hsmci_set_io(const struct device *dev, struct sdhc_io *ios)
 {
@@ -141,9 +159,7 @@ static int sam_hsmci_set_io(const struct device *dev, struct sdhc_io *ios)
 	return 0;
 }
 
-/*
- * Early system init for SDHC
- */
+
 static int sam_hsmci_init(const struct device *dev)
 {
 	const struct sam_hsmci_config *config = dev->config;
@@ -185,6 +201,7 @@ static int sam_hsmci_init(const struct device *dev)
 	return 0;
 }
 
+
 static int sam_hsmci_get_card_present(const struct device *dev)
 {
 	LOG_DBG("sam_hsmci_get_card_present()");
@@ -204,7 +221,6 @@ static int sam_hsmci_card_busy(const struct device *dev)
 {
 	LOG_DBG("sam_hsmci_card_busy()");
 	const struct sam_hsmci_config *config = dev->config;
-	struct sam_hsmci_data *data = dev->data;
 	Hsmci * hsmci = config->base; 
 
 	return (hsmci->HSMCI_SR & HSMCI_SR_NOTBUSY) == 0;
@@ -224,6 +240,7 @@ static void sam_hsmci_send_clocks(Hsmci * hsmci)
 	// Wait end of initialization command
 	while (!(hsmci->HSMCI_SR & HSMCI_SR_CMDRDY));
 }
+
 
 static int sam_hsmci_send_cmd(Hsmci * hsmci, struct sdhc_command *cmd, uint32_t cmdr,	struct sam_hsmci_data *data)
 {
@@ -279,10 +296,12 @@ static int sam_hsmci_send_cmd(Hsmci * hsmci, struct sdhc_command *cmd, uint32_t 
 	return 0;
 }
 
+
 static int sam_hsmci_wait_read_end(Hsmci * hsmci)
 {
 	uint32_t sr;
-	do {
+	do 
+	{
 		sr = hsmci->HSMCI_SR;
 		if (sr & (HSMCI_SR_UNRE | HSMCI_SR_OVRE | \
 				HSMCI_SR_DTOE | HSMCI_SR_DCRCE)) {
@@ -291,10 +310,10 @@ static int sam_hsmci_wait_read_end(Hsmci * hsmci)
 			hsmci->HSMCI_PTCR = HSMCI_PTCR_RXTDIS | HSMCI_PTCR_TXTDIS;
 			return -EIO;
 		}
-
 	} while (!(sr & HSMCI_SR_RXBUFF));
 
-	do {
+	do 
+	{
 		sr = hsmci->HSMCI_SR;
 		if (sr & (HSMCI_SR_UNRE | HSMCI_SR_OVRE | \
 				HSMCI_SR_DTOE | HSMCI_SR_DCRCE)) {
@@ -303,6 +322,7 @@ static int sam_hsmci_wait_read_end(Hsmci * hsmci)
 	} while (!(sr & HSMCI_SR_XFRDONE));
 	return 0;
 }
+
 
 static int sam_hsmci_write_timeout(Hsmci * hsmci, int timeout_ms)
 {
@@ -321,11 +341,12 @@ static int sam_hsmci_write_timeout(Hsmci * hsmci, int timeout_ms)
 		}
 	}
 	// So, if it is > maximum timeout... we'll just put it on the maximum the driver supports
+	// its not nice.. but it should work.. what else is there to do?
 	hsmci->HSMCI_DTOR = HSMCI_DTOR_DTOMUL_Msk | HSMCI_DTOR_DTOCYC_Msk;
 	return 0;
 }
 
-static int sam_hsmci_request(const struct device *dev,
+static int sam_hsmci_request_inner(const struct device *dev,
 			struct sdhc_command *cmd,
 			struct sdhc_data *sdhc_data)
 {
@@ -419,9 +440,6 @@ static int sam_hsmci_request(const struct device *dev,
 		default:
 			return -ENOTSUP;
 		}
-
-		
-
 	}
 
 	LOG_DBG("RSP0=%08x, RPS1=%08x, RPS2=%08x,RSP3=%08x, SR-1=%08x, SR=%08x",
@@ -429,6 +447,62 @@ static int sam_hsmci_request(const struct device *dev,
 
 	return 0;
 }
+
+
+static void sam_hsmci_abort(const struct device *dev)
+{
+	const struct sam_hsmci_config *config = dev->config;
+	Hsmci * hsmci = config->base; 
+	hsmci->HSMCI_PTCR = HSMCI_PTCR_RXTDIS | HSMCI_PTCR_TXTDIS;
+	struct sdhc_command cmd = 
+	{
+		.opcode = SD_STOP_TRANSMISSION,
+		.arg = 0,
+		.response_type = SD_RSP_TYPE_NONE
+	};
+	sam_hsmci_request_inner(dev, &cmd, NULL);			
+}
+
+
+static int sam_hsmci_request(const struct device *dev,
+			struct sdhc_command *cmd,
+			struct sdhc_data *sdhc_data)
+{
+	int ret = 0;
+	struct sam_hsmci_data *dev_data = dev->data;
+	int busy_timeout = _HSMCI_DEFAULT_TIMEOUT;
+
+	ret = k_mutex_lock(&dev_data->mtx, K_MSEC(cmd->timeout_ms));
+	if (ret) {
+		LOG_ERR("Could not access card");
+		return -EBUSY;
+	}
+	do {	
+		ret = sam_hsmci_request_inner(dev, cmd, sdhc_data);
+		if (sdhc_data && ret) 
+		{
+			sam_hsmci_abort(dev);
+			while (busy_timeout > 0) 
+			{
+				if (!sam_hsmci_card_busy(dev)) {
+					break;
+				}
+				/* Wait 125us before polling again */
+				k_busy_wait(125);
+				busy_timeout -= 125;
+			}
+			if (busy_timeout <= 0) 
+			{
+				LOG_ERR("Card did not idle after CMD12");
+				k_mutex_unlock(&dev_data->mtx);
+				return -ETIMEDOUT;
+			}
+		}
+	} while (ret != 0 && (cmd->retries-- > 0));
+	k_mutex_unlock(&dev_data->mtx);
+	return ret;
+}
+
 
 static const struct sdhc_driver_api hsmci_api = {
 	.reset = sam_hsmci_reset,
