@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#define DT_DRV_COMPAT atmel_sam_hsmci
+
 
 /*
 	Note: This driver for now only works with PDC mode! 
@@ -11,13 +13,11 @@
 	Families which should work:
 		SAM4E, SAM4S
 
-	Families which require DMA and do not work (yet):
+	Families which require XDMA and do not work (yet):
 		SAMS, SAMV, SAME
 		
  */
 
-
-#define DT_DRV_COMPAT atmel_sam_hsmci
 
 #include <zephyr/drivers/sdhc.h>
 #include <zephyr/drivers/gpio.h>
@@ -26,6 +26,11 @@
 #include <zephyr/drivers/clock_control.h>
 #include <zephyr/logging/log.h>
 #include <soc.h>
+
+#ifndef HSMCI_MR_PDCMODE
+#error "Sorry, only SAM4E/SAM4S are supported at the moment"
+#endif
+
 
 LOG_MODULE_REGISTER(hsmci, LOG_LEVEL_DBG);
 
@@ -109,7 +114,6 @@ static int sam_hsmci_set_io(const struct device *dev, struct sdhc_io *ios)
 
 	if (ios->clock > 0)
 	{
-		// int div_val = ((_HSMCI_MAX_FREQ + (ios->clock >> 1) - 1) / ios->clock) - 1;
 		int div_val = SOC_ATMEL_SAM_MCK_FREQ_HZ / ios->clock - 2;
 		if (div_val < 0) div_val = 0;
 		if (div_val > 0x1ff) div_val = 0x1ff;
@@ -297,6 +301,44 @@ static int sam_hsmci_send_cmd(Hsmci * hsmci, struct sdhc_command *cmd, uint32_t 
 }
 
 
+static int sam_hsmci_wait_write_end(Hsmci * hsmci)
+{
+	uint32_t sr = 0;
+
+	// Wait end of transfer
+	// Note: no need of timeout, because it is include in HSMCI, see DTOE bit.
+	do {
+		sr = hsmci->HSMCI_SR;
+		if (sr &
+				(HSMCI_SR_UNRE | HSMCI_SR_OVRE | \
+				HSMCI_SR_DTOE | HSMCI_SR_DCRCE)) {
+			LOG_DBG("PDC sr 0x%08x error", sr);
+			hsmci->HSMCI_PTCR = HSMCI_PTCR_RXTDIS | HSMCI_PTCR_TXTDIS;
+			return -EIO;
+		}
+	} while (!(sr & HSMCI_SR_TXBUFE));
+
+
+	// if (hsmci_transfert_pos < ((uint32_t)hsmci_block_size * hsmci_nb_block)) {
+	// 	return 0;
+	// }
+	// It is the last transfer, then wait command completed
+	// Note: no need of timeout, because it is include in HSMCI, see DTOE bit.
+	do {
+		sr = hsmci->HSMCI_SR;
+		if (sr & (HSMCI_SR_UNRE | HSMCI_SR_OVRE | \
+				HSMCI_SR_DTOE | HSMCI_SR_DCRCE)) {
+			LOG_DBG("PDC sr 0x%08x last transfer error", sr);
+			hsmci->HSMCI_PTCR = HSMCI_PTCR_RXTDIS | HSMCI_PTCR_TXTDIS;
+			return -EIO;
+		}
+	} while (!(sr & HSMCI_SR_NOTBUSY));
+
+	if (!(hsmci->HSMCI_SR & HSMCI_SR_FIFOEMPTY)) return -EIO;
+	return 0;
+}
+
+
 static int sam_hsmci_wait_read_end(Hsmci * hsmci)
 {
 	uint32_t sr;
@@ -346,6 +388,7 @@ static int sam_hsmci_write_timeout(Hsmci * hsmci, int timeout_ms)
 	return 0;
 }
 
+
 static int sam_hsmci_request_inner(const struct device *dev,
 			struct sdhc_command *cmd,
 			struct sdhc_data *sdhc_data)
@@ -354,7 +397,7 @@ static int sam_hsmci_request_inner(const struct device *dev,
 	const struct sam_hsmci_config *config = dev->config;
 	struct sam_hsmci_data *data = dev->data;
 	Hsmci * hsmci = config->base; 
-	uint32_t sr;
+	uint32_t sr = 0;
 	int ret;
 
 	// when CMD0 , we'll prefix 74 clocks
@@ -377,9 +420,11 @@ static int sam_hsmci_request_inner(const struct device *dev,
 		switch (cmd->opcode) {
 		case SD_WRITE_SINGLE_BLOCK:
 			cmdr |= HSMCI_CMDR_TRTYP_SINGLE;
+			cmdr |= HSMCI_CMDR_TRDIR_WRITE;
 			break;			
 		case SD_WRITE_MULTIPLE_BLOCK:
 			cmdr |= HSMCI_CMDR_TRTYP_MULTIPLE;
+			cmdr |= HSMCI_CMDR_TRDIR_WRITE;
 			break;
 		case SD_APP_SEND_SCR:
 		case SD_SWITCH:
@@ -427,7 +472,10 @@ static int sam_hsmci_request_inner(const struct device *dev,
 		switch (cmd->opcode) {
 		case SD_WRITE_SINGLE_BLOCK:
 		case SD_WRITE_MULTIPLE_BLOCK:
-			return -ENOTSUP;
+			hsmci->HSMCI_PTCR = HSMCI_PTCR_TXTEN;
+			ret = sam_hsmci_wait_write_end(hsmci);
+			if (ret != 0) return ret;
+			break;
 		case SD_READ_SINGLE_BLOCK:
 		case SD_READ_MULTIPLE_BLOCK:
 		case SD_APP_SEND_SCR:
@@ -472,6 +520,7 @@ static int sam_hsmci_request(const struct device *dev,
 	struct sam_hsmci_data *dev_data = dev->data;
 	int busy_timeout = _HSMCI_DEFAULT_TIMEOUT;
 
+	// Thanks Daniel DeGrasse for this nice outer-loop
 	ret = k_mutex_lock(&dev_data->mtx, K_MSEC(cmd->timeout_ms));
 	if (ret) {
 		LOG_ERR("Could not access card");
