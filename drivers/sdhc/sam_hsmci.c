@@ -25,6 +25,7 @@
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/drivers/clock_control.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/kernel.h>
 #include <soc.h>
 
 #ifndef HSMCI_MR_PDCMODE
