@@ -33,7 +33,7 @@
 #endif
 
 
-LOG_MODULE_REGISTER(hsmci, LOG_LEVEL_INF);
+LOG_MODULE_REGISTER(hsmci, CONFIG_SDHC_LOG_LEVEL);
 
 #define _HSMCI_DEFAULT_TIMEOUT 5000
 #define _HSMCI_MAX_FREQ (SOC_ATMEL_SAM_MCK_FREQ_HZ >> 1)
@@ -458,9 +458,26 @@ static int sam_hsmci_request_inner(const struct device *dev,
 		hsmci->HSMCI_BLKR = 
 			HSMCI_BLKR_BLKLEN(sdhc_data->block_size) |
 			HSMCI_BLKR_BCNT(sdhc_data->blocks);
-		hsmci->HSMCI_RCR = size;
-		hsmci->HSMCI_RPR = (uint32_t) sdhc_data->data;
-		hsmci->HSMCI_RNCR = 0;
+
+		hsmci->HSMCI_RNCR = 0;		
+
+		switch (cmd->opcode) {
+		case SD_WRITE_SINGLE_BLOCK:
+		case SD_WRITE_MULTIPLE_BLOCK:
+		case SD_APP_SEND_SCR:
+		case SD_SWITCH:
+			hsmci->HSMCI_TCR = size;
+			hsmci->HSMCI_TPR = (uint32_t) sdhc_data->data;
+			break;
+		case SD_READ_SINGLE_BLOCK:
+		case SD_READ_MULTIPLE_BLOCK:
+		case SD_APP_SEND_NUM_WRITTEN_BLK:
+			hsmci->HSMCI_RCR = size;
+			hsmci->HSMCI_RPR = (uint32_t) sdhc_data->data;
+			break;
+		default:
+			return -ENOTSUP;
+		}
 	} else {
 		hsmci->HSMCI_MR &= ~HSMCI_MR_PDCMODE;
 	}
