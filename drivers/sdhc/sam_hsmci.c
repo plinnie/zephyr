@@ -244,6 +244,7 @@ static void sam_hsmci_send_clocks(Hsmci * hsmci)
 			| HSMCI_CMDR_OPDCMD_OPENDRAIN;
 	// Wait end of initialization command
 	while (!(hsmci->HSMCI_SR & HSMCI_SR_CMDRDY));
+	hsmci->HSMCI_MR |= HSMCI_MR_WRPROOF | HSMCI_MR_RDPROOF;
 }
 
 
@@ -360,7 +361,7 @@ static int sam_hsmci_wait_read_end(Hsmci * hsmci)
 		sr = hsmci->HSMCI_SR;
 		if (sr & (HSMCI_SR_UNRE | HSMCI_SR_OVRE | \
 				HSMCI_SR_DTOE | HSMCI_SR_DCRCE)) {
-			return false;
+			return -EIO;
 		}
 	} while (!(sr & HSMCI_SR_XFRDONE));
 	return 0;
@@ -381,6 +382,7 @@ static int sam_hsmci_write_timeout(Hsmci * hsmci, int timeout_ms)
 		{
 			hsmci->HSMCI_DTOR = ( ( i << HSMCI_DTOR_DTOMUL_Pos ) & HSMCI_DTOR_DTOMUL_Msk ) |
 				HSMCI_DTOR_DTOCYC ( (  clocks + mul - 1 ) / mul );
+			return 0;
 		}
 	}
 	// So, if it is > maximum timeout... we'll just put it on the maximum the driver supports
@@ -474,7 +476,8 @@ static int sam_hsmci_request_inner(const struct device *dev,
 		case SD_APP_SEND_NUM_WRITTEN_BLK:
 			hsmci->HSMCI_RCR = size;
 			hsmci->HSMCI_RPR = (uint32_t) sdhc_data->data;
-			break;
+			hsmci->HSMCI_PTCR = HSMCI_PTCR_RXTEN;
+ 			break;
 		default:
 			return -ENOTSUP;
 		}
@@ -498,7 +501,7 @@ static int sam_hsmci_request_inner(const struct device *dev,
 		case SD_READ_MULTIPLE_BLOCK:
 		case SD_APP_SEND_SCR:
 		case SD_SWITCH:
-			hsmci->HSMCI_PTCR = HSMCI_PTCR_RXTEN;
+			
 			ret = sam_hsmci_wait_read_end(hsmci);
 			if (ret != 0) return ret;
 			break;
