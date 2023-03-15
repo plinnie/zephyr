@@ -36,7 +36,7 @@
 LOG_MODULE_REGISTER(hsmci, CONFIG_SDHC_LOG_LEVEL);
 
 #define _HSMCI_DEFAULT_TIMEOUT 5000
-#define _HSMCI_MAX_FREQ (SOC_ATMEL_SAM_MCK_FREQ_HZ >> 1)
+#define _HSMCI_MAX_FREQ (SOC_ATMEL_SAM_MCK_FREQ_HZ >> 4)
 #define _HSMCI_MIN_FREQ (_HSMCI_MAX_FREQ / 0x200)		// only valid when MCI has ODD bit
 
 #define _HSMCI_SR_ERR 	(HSMCI_SR_RINDE | HSMCI_SR_RDIRE | HSMCI_SR_RCRCE | \
@@ -315,7 +315,6 @@ static int sam_hsmci_wait_write_end(Hsmci * hsmci)
 				(HSMCI_SR_UNRE | HSMCI_SR_OVRE | \
 				HSMCI_SR_DTOE | HSMCI_SR_DCRCE)) {
 			LOG_DBG("PDC sr 0x%08x error", sr);
-			hsmci->HSMCI_PTCR = HSMCI_PTCR_RXTDIS | HSMCI_PTCR_TXTDIS;
 			return -EIO;
 		}
 	} while (!(sr & HSMCI_SR_TXBUFE));
@@ -331,7 +330,6 @@ static int sam_hsmci_wait_write_end(Hsmci * hsmci)
 		if (sr & (HSMCI_SR_UNRE | HSMCI_SR_OVRE | \
 				HSMCI_SR_DTOE | HSMCI_SR_DCRCE)) {
 			LOG_DBG("PDC sr 0x%08x last transfer error", sr);
-			hsmci->HSMCI_PTCR = HSMCI_PTCR_RXTDIS | HSMCI_PTCR_TXTDIS;
 			return -EIO;
 		}
 	} while (!(sr & HSMCI_SR_NOTBUSY));
@@ -351,7 +349,6 @@ static int sam_hsmci_wait_read_end(Hsmci * hsmci)
 				HSMCI_SR_DTOE | HSMCI_SR_DCRCE)) {
 			LOG_DBG("PDC sr 0x%08x error", sr & (HSMCI_SR_UNRE | HSMCI_SR_OVRE | \
 				HSMCI_SR_DTOE | HSMCI_SR_DCRCE));
-			hsmci->HSMCI_PTCR = HSMCI_PTCR_RXTDIS | HSMCI_PTCR_TXTDIS;
 			return -EIO;
 		}
 	} while (!(sr & HSMCI_SR_RXBUFF));
@@ -401,7 +398,7 @@ static int sam_hsmci_request_inner(const struct device *dev,
 	struct sam_hsmci_data *data = dev->data;
 	Hsmci * hsmci = config->base; 
 	uint32_t sr = 0;
-	int ret;
+	int ret = 0;
 
 	// when CMD0 , we'll prefix 74 clocks
 	if (cmd->opcode == SD_GO_IDLE_STATE) 
@@ -410,7 +407,7 @@ static int sam_hsmci_request_inner(const struct device *dev,
 	}
 
 	uint32_t cmdr = 0;
-
+	bool is_write = false;
 	// now we'll need to setup data-transfer, if any
 	if (sdhc_data)
 	{
@@ -424,8 +421,10 @@ static int sam_hsmci_request_inner(const struct device *dev,
 		case SD_WRITE_SINGLE_BLOCK:
 			cmdr |= HSMCI_CMDR_TRTYP_SINGLE;
 			cmdr |= HSMCI_CMDR_TRDIR_WRITE;
+			is_write = true;
 			break;			
 		case SD_WRITE_MULTIPLE_BLOCK:
+			is_write = true;
 			cmdr |= HSMCI_CMDR_TRTYP_MULTIPLE;
 			cmdr |= HSMCI_CMDR_TRDIR_WRITE;
 			break;
@@ -455,6 +454,7 @@ static int sam_hsmci_request_inner(const struct device *dev,
 			size = sdhc_data->block_size;
 			hsmci->HSMCI_MR |= HSMCI_MR_FBYTE;
 		}
+		
 		hsmci->HSMCI_MR |= HSMCI_MR_PDCMODE;
 		// we can do word mode
 		hsmci->HSMCI_BLKR = 
@@ -463,58 +463,43 @@ static int sam_hsmci_request_inner(const struct device *dev,
 
 		hsmci->HSMCI_RNCR = 0;		
 
-		switch (cmd->opcode) {
-		case SD_WRITE_SINGLE_BLOCK:
-		case SD_WRITE_MULTIPLE_BLOCK:
-		case SD_APP_SEND_SCR:
-		case SD_SWITCH:
+		if (is_write) {
 			hsmci->HSMCI_TCR = size;
 			hsmci->HSMCI_TPR = (uint32_t) sdhc_data->data;
-			break;
-		case SD_READ_SINGLE_BLOCK:
-		case SD_READ_MULTIPLE_BLOCK:
-		case SD_APP_SEND_NUM_WRITTEN_BLK:
+		} else {
 			hsmci->HSMCI_RCR = size;
 			hsmci->HSMCI_RPR = (uint32_t) sdhc_data->data;
 			hsmci->HSMCI_PTCR = HSMCI_PTCR_RXTEN;
- 			break;
-		default:
-			return -ENOTSUP;
 		}
 	} else {
 		hsmci->HSMCI_MR &= ~HSMCI_MR_PDCMODE;
 	}
 
 	ret = sam_hsmci_send_cmd(hsmci, cmd, cmdr, data);
-	if (ret != 0) return ret;
 
-	if (sdhc_data)
+	if (sdhc_data && ret == 0)
 	{
-		switch (cmd->opcode) {
-		case SD_WRITE_SINGLE_BLOCK:
-		case SD_WRITE_MULTIPLE_BLOCK:
+		if (is_write) 
+		{
 			hsmci->HSMCI_PTCR = HSMCI_PTCR_TXTEN;
 			ret = sam_hsmci_wait_write_end(hsmci);
-			if (ret != 0) return ret;
-			break;
-		case SD_READ_SINGLE_BLOCK:
-		case SD_READ_MULTIPLE_BLOCK:
-		case SD_APP_SEND_SCR:
-		case SD_SWITCH:
-			
+			hsmci->HSMCI_PTCR = HSMCI_PTCR_TXTDIS;
+		} else {
 			ret = sam_hsmci_wait_read_end(hsmci);
-			if (ret != 0) return ret;
-			break;
-		case SD_APP_SEND_NUM_WRITTEN_BLK:
-		default:
-			return -ENOTSUP;
+			hsmci->HSMCI_PTCR = HSMCI_PTCR_RXTDIS;
 		}
 	}
 
-	LOG_DBG("RSP0=%08x, RPS1=%08x, RPS2=%08x,RSP3=%08x, SR-1=%08x, SR=%08x",
-		cmd->response[0], cmd->response[1], cmd->response[2], cmd->response[3], sr, hsmci->HSMCI_SR);
+	hsmci->HSMCI_MR &= ~HSMCI_MR_PDCMODE;
 
-	return 0;
+	sr = hsmci->HSMCI_SR; 
+	LOG_DBG("RSP0=%08x, RPS1=%08x, RPS2=%08x,RSP3=%08x, SR=%08x",
+		cmd->response[0], cmd->response[1], cmd->response[2], cmd->response[3], sr);
+	if (sr & HSMCI_SR_RXRDY) 
+	{
+		LOG_WRN("Current command did not empty RX buffer! Bad command!");
+	}
+	return ret;
 }
 
 
@@ -570,6 +555,9 @@ static int sam_hsmci_request(const struct device *dev,
 		}
 	} while (ret != 0 && (cmd->retries-- > 0));
 	k_mutex_unlock(&dev_data->mtx);
+	
+	
+
 	return ret;
 }
 
