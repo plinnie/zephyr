@@ -1,0 +1,17 @@
+# Copyright (c) 2023, Nikhef Amsterdam
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+    TMP100 Digital Temperature Sensor. See datasheet at
+    https://www.ti.com/lit/ds/symlink/tmp100.pdf
+
+compatible: "ti,tmp100"
+
+include: [sensor-device.yaml, i2c-device.yaml]
+
+properties:
+  resolution:
+    type: int
+    description: |
+     The converter resolution in number of bit between 9 and 12
+ 

@@ -1,0 +1,13 @@
+# TMP007 infrared thermopile sensor configuration options
+
+# Copyright (c) 2016 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+menuconfig TMP100
+	bool "TMP100 Temperature sensor on chip"
+	default y
+	depends on DT_HAS_TI_TMP100_ENABLED
+	select I2C
+	help
+	  Enable driver for TMP100 on chip sensors.
+
