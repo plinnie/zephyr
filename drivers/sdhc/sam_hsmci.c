@@ -36,8 +36,9 @@
 LOG_MODULE_REGISTER(hsmci, CONFIG_SDHC_LOG_LEVEL);
 
 #define _HSMCI_DEFAULT_TIMEOUT 5000
-#define _HSMCI_MAX_FREQ (SOC_ATMEL_SAM_MCK_FREQ_HZ >> 4)
+#define _HSMCI_MAX_FREQ (SOC_ATMEL_SAM_MCK_FREQ_HZ >> 1)
 #define _HSMCI_MIN_FREQ (_HSMCI_MAX_FREQ / 0x200)		// only valid when MCI has ODD bit
+#define _HSMCI_PWRSAVE	7
 
 #define _HSMCI_SR_ERR 	(HSMCI_SR_RINDE | HSMCI_SR_RDIRE | HSMCI_SR_RCRCE | \
 						 HSMCI_SR_RENDE | HSMCI_SR_RTOE  | HSMCI_SR_DCRCE | \
@@ -119,7 +120,7 @@ static int sam_hsmci_set_io(const struct device *dev, struct sdhc_io *ios)
 		if (div_val < 0) div_val = 0;
 		if (div_val > 0x1ff) div_val = 0x1ff;
 
-		LOG_DBG("divider: %d (freq=%d)", div_val, _HSMCI_MAX_FREQ);
+		LOG_DBG("divider: %d (freq=%d)", div_val, SOC_ATMEL_SAM_MCK_FREQ_HZ / (div_val + 2));
 
 		hsmci->HSMCI_MR &= ~HSMCI_MR_CLKDIV_Msk;
 		hsmci->HSMCI_MR |= ( ( div_val & 1 ) ? HSMCI_MR_CLKODD : 0 ) |
@@ -197,11 +198,16 @@ static int sam_hsmci_init(const struct device *dev)
 
 	Hsmci * hsmci = config->base; 
 	// reset the device
-	hsmci->HSMCI_CR |= HSMCI_CR_SWRST;
-	// Enable the HSMCI multi-media interface
-	hsmci->HSMCI_CR |= HSMCI_CR_MCIEN;
+	hsmci->HSMCI_CR = HSMCI_CR_SWRST;
+	hsmci->HSMCI_CR = HSMCI_CR_PWSDIS;
+	hsmci->HSMCI_CR = HSMCI_CR_MCIEN;
 	// enable read/write proof, we don't want to loose data
+#ifdef _HSMCI_PWRSAVE
+	hsmci->HSMCI_MR = HSMCI_MR_RDPROOF | HSMCI_MR_WRPROOF | HSMCI_MR_PWSDIV(_HSMCI_PWRSAVE);
+	hsmci->HSMCI_CR = HSMCI_CR_PWSEN;
+#else
 	hsmci->HSMCI_MR = HSMCI_MR_RDPROOF | HSMCI_MR_WRPROOF;
+#endif
 
 	return 0;
 }
@@ -532,6 +538,13 @@ static int sam_hsmci_request(const struct device *dev,
 		LOG_ERR("Could not access card");
 		return -EBUSY;
 	}
+
+#ifdef _HSMCI_PWRSAVE
+	const struct sam_hsmci_config *config = dev->config;
+	Hsmci * hsmci = config->base; 
+	hsmci->HSMCI_CR = HSMCI_CR_PWSDIS;
+#endif
+
 	do {	
 		ret = sam_hsmci_request_inner(dev, cmd, sdhc_data);
 		if (sdhc_data && ret) 
@@ -549,14 +562,17 @@ static int sam_hsmci_request(const struct device *dev,
 			if (busy_timeout <= 0) 
 			{
 				LOG_ERR("Card did not idle after CMD12");
-				k_mutex_unlock(&dev_data->mtx);
-				return -ETIMEDOUT;
+				ret = -ETIMEDOUT;
 			}
 		}
 	} while (ret != 0 && (cmd->retries-- > 0));
+
+#ifdef _HSMCI_PWRSAVE
+	hsmci->HSMCI_CR = HSMCI_CR_PWSEN;
+#endif
+
 	k_mutex_unlock(&dev_data->mtx);
-	
-	
+
 
 	return ret;
 }
